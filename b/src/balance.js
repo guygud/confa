@@ -64,8 +64,6 @@ export const TRACK = {
   gapFloor: 0.98,
   /** Короткий хвост после последнего удара, в секундах хода. */
   tailTime: 0.32,
-  /** Первый уровень: длина трассы ×N при тех же 4 клюшках. */
-  l0LengthMul: 2,
 };
 
 /** Сколько и каких клюшек на уровне. */
@@ -212,15 +210,13 @@ export function gapFor(level, mods = {}) {
  * Длина трассы выводится из расстановки, а не задаётся руками.
  * Реальный шаг между клюшками — это зазор минус hitLine: следующую ставим
  * от точки удара, а не от лезвия предыдущей.
- * Первый уровень — исключение: длина × TRACK.l0LengthMul, клюшек по-прежнему 4.
  */
 export function trackLength(level, mods = {}, introTime = 0) {
   const n = sticksFor(level);
   const v = launchSpeed(level);
   const step = Math.max(90, gapFor(level, mods) * v - TRACK.hitLine);
   const lastStick = 40 + introTime * v + TRACK.openTime * v + Math.max(0, n - 1) * step;
-  const dist = Math.round(lastStick - TRACK.hitLine + TRACK.creaseBack + v * TRACK.tailTime);
-  return level === 0 ? dist * TRACK.l0LengthMul : dist;
+  return Math.round(lastStick - TRACK.hitLine + TRACK.creaseBack + v * TRACK.tailTime);
 }
 
 function endlessWinMul(level) {

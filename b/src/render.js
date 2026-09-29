@@ -23,7 +23,6 @@ import {
   PYLON,
   SPEED_LINES,
   STICK,
-  STRAFE,
 } from "./tuning.js";
 import {
   PAL,
@@ -32,6 +31,7 @@ import {
   core,
   glowPool,
   pylon,
+  ring,
   spark,
   wallColumns,
 } from "../../skin.js";
@@ -49,11 +49,11 @@ import {
   syncCamera,
 } from "./camera.js";
 import { S, theme } from "./state.js";
-import { strikeProgress, timeToHit, timingPhase } from "./rules.js";
+import { timeToHit, timingPhase } from "./rules.js";
 import { cueCaption, cueKey, cueTarget, cueWord } from "./tutorial.js";
 import { TUTOR } from "./tutorial-script.js";
 import { hoodJitter, worldJitter } from "./fx.js";
-import { clamp01, hash01, hexToRgbStr, smoothstep } from "./util.js";
+import { clamp01, hash01, hexToRgbStr } from "./util.js";
 import { W, H, isTouchUi } from "./viewport.js";
 
 // Буферы сортировки живут между кадрами: рендер не должен мусорить массивами.
@@ -281,28 +281,62 @@ function slipProgress(obs) {
   return clamp01((S.puck.z - from) / STICK.slipSpan);
 }
 
-/** Растворяем клюшку на проезде и ещё раз у самого глаза, чтобы не мазала. */
-function passAlpha(slip, d) {
-  return Math.pow(Math.max(0, 1 - slip), 0.9) * clamp01((d - CAM.near) / 70);
-}
-
-/** Куда наводится боковая красная: её прицел, а не центр коридора. */
-function stickAimX(obs) {
-  if (!obs || obs.side === 0 || typeof obs.aimX !== "number") return 0;
-  return obs.aimX;
+/**
+ * Пока ответа нет, колонна не гаснет: контакт должен быть виден.
+ * После ответа она тает по проезду, но не пропадает в один кадр у самого глаза.
+ */
+function passAlpha(slip, d, holding) {
+  if (holding) return 1;
+  const slipFade = Math.pow(Math.max(0, 1 - slip), 0.55);
+  const near = clamp01((d - CAM.near) / 40);
+  return slipFade * (0.5 + 0.5 * near);
 }
 
 /**
- * Замах отсчитывается ОТ точки наводки: на swing = 1 лезвие приходит ровно в
- * прицел, а не в центр коридора. Иначе после рывка клюшка уезжала за кадр
- * вместо того, чтобы тянуться за шайбой.
+ * Мировой x, который на этой глубине попадает в долю ширины кадра.
+ * Иначе боковая колонна к моменту удара уезжает за край экрана.
  */
-function stickTipX(side, swing, push, foe, obs) {
+function worldXAtScreen(z, frac) {
+  const target = W * frac;
+  const origin = project(0, z, true);
+  const sample = project(80, z, true);
+  if (!origin || !sample) return (frac - 0.5) * CORRIDOR.halfW;
+  const per = (sample.sx - origin.sx) / 80;
+  if (Math.abs(per) < 0.02) return (frac - 0.5) * CORRIDOR.halfW * 0.5;
+  const x = (target - origin.sx) / per;
+  if (!Number.isFinite(x)) return (frac - 0.5) * CORRIDOR.halfW;
+  return Math.max(-CORRIDOR.halfW * 3, Math.min(CORRIDOR.halfW * 3, x));
+}
+
+/** Доля кадра: своя сторона, после уворота — к краю, после промаха — к ядру. */
+function screenFracFor(side, obs, slip) {
+  const sign = side < 0 ? -1 : 1;
+  const home = 0.5 + sign * 0.22;
+  if (!obs || !obs.resolved) return home;
+  if (obs.ok) return home + sign * 0.14 * Math.min(1, slip * 1.3);
+  return home - sign * 0.22 * Math.min(1, slip * 1.6);
+}
+
+/**
+ * Колонна держится в кадре. Боковая — на своей трети экрана, лобовая пара —
+ * по краям видимой полосы. Уворот уводит к краю, промах — к ядру.
+ */
+function stickTipX(side, z, foe, obs, slip = 0) {
   if (foe === false) {
-    // 0 = за бортом, 1 = лезвие в кадре у шайбы; после толчка push уносит наружу.
-    return side * (CORRIDOR.halfW * (1.55 - swing * 0.95) + push * 36);
+    const sign = side < 0 ? -1 : 1;
+    const home = 0.5 + sign * 0.34;
+    const away = 0.5 + sign * 0.42;
+    const frac = obs && obs.ok ? home + (away - home) * slip : home;
+    return worldXAtScreen(z, frac);
   }
-  return stickAimX(obs) + side * (CORRIDOR.halfW * (1.05 - swing * 1.05 + push));
+  if (obs && obs.side === 0) {
+    const sign = side < 0 ? -1 : 1;
+    const home = 0.5 + sign * 0.26;
+    const hit = 0.5 + sign * 0.08;
+    const frac = obs.resolved && !obs.ok ? home + (hit - home) * Math.min(1, slip * 1.5) : home;
+    return worldXAtScreen(z, frac);
+  }
+  return worldXAtScreen(z, screenFracFor(side, obs, slip));
 }
 
 /**
@@ -359,7 +393,7 @@ function drawIceGlow(x, z, obs) {
   }
   if (!phase || intensity <= 0.02) return;
 
-  const p = project(x, z);
+  const p = project(x, z, true);
   if (!p) return;
 
   // Клюшка на act-паузе звучит громче всех; в свободной игре пятно тише.
@@ -391,7 +425,7 @@ function drawIceGlow(x, z, obs) {
     alpha = (0.22 + intensity * 0.3) * boost;
   }
 
-  const fade = passAlpha(slipProgress(obs), p.d);
+  const fade = passAlpha(slipProgress(obs), p.d, !obs.resolved);
   const rx = Math.max(10, 28 * p.k * radiusMul * Math.max(boost, 0.7));
   const ry = Math.max(4, rx * 0.38);
 
@@ -427,8 +461,11 @@ function drawIceGlow(x, z, obs) {
 /** Колонна на полу: заезжает в кадр по той же траектории, что и прежнее лезвие. */
 function drawColumn(tipX, tipZ, pal, alpha, widthMul = 1) {
   const base = project(tipX, tipZ, true);
-  const top = projectHeight(tipX, tipZ, PYLON.worldH, true);
+  let top = projectHeight(tipX, tipZ, PYLON.worldH, true);
   if (!base || !top) return null;
+  // Близкая колонна не должна закрывать весь кадр: потолок высоты — доля экрана.
+  const maxH = H * 0.4;
+  if (base.sy - top.sy > maxH) top = { ...top, sy: base.sy - maxH };
   const halfW = Math.max(
     2,
     Math.min(W * PYLON.maxScreenFrac, PYLON.worldW * widthMul * base.k) * 0.5
@@ -437,43 +474,39 @@ function drawColumn(tipX, tipZ, pal, alpha, widthMul = 1) {
   return base;
 }
 
-function slapPose(arrive) {
-  const t = clamp01((arrive - 0.42) / 0.38);
-  return t * t * (3 - 2 * t);
+/** Кольцо в точке ответа: уворот светлый, попадание — цветом угрозы. */
+function drawContact(x, z, obs, slip) {
+  if (!obs.resolved || slip > 0.5) return;
+  const base = project(x, z, true);
+  if (!base) return;
+  const grow = slip / 0.5;
+  const rx = Math.min(W * 0.12, Math.max(14, 22 * base.k)) * (0.7 + grow);
+  ring(ctx, base.sx, base.sy, rx, Math.max(6, rx * 0.36), {
+    rgb: obs.ok ? PAL.spark : PAL.foe,
+    alpha: (1 - grow) * 0.95,
+  });
 }
 
 function drawStick(obs) {
-  const arrive = smoothstep(strikeProgress(obs));
   const slip = slipProgress(obs);
-  const pose = obs.foe ? arrive : slip > 0 ? 1 : slapPose(arrive);
-  const side = obs.side;
-  // Бросок ухода front-loaded: почти весь путь из кадра проходит сразу.
-  const whip = (2 - slip) * slip * STICK.dodgeWhip;
-  const push = obs.ok ? (obs.foe ? whip : slip * 1.1) : slip * 0.2;
-  const tipX = stickTipX(side, arrive, push, obs.foe, obs);
   const tipZ = obs.z + STICK.tipZOffset;
-  const aimX = stickAimX(obs);
-  // Пока прицел не догнал шайбу, колонна раздаётся — видно, как она тянется.
-  const gap = obs.foe && obs.side !== 0 && !obs.resolved ? Math.abs((S.puck.x || 0) - aimX) : 0;
-  const widthMul = 1 + Math.min(0.22, (gap / STRAFE.maxX) * 0.4);
+  const tipX = stickTipX(obs.side, tipZ, obs.foe, obs, slip);
 
-  if (obs.foe) {
-    const glowX = obs.side !== 0 ? aimX : tipX * 0.38;
-    drawIceGlow(glowX, tipZ, obs);
-  }
+  if (obs.foe) drawIceGlow(tipX, tipZ, obs);
 
-  const tip = projectHeight(tipX, tipZ, STICK.tipHeight);
+  const tip = projectHeight(tipX, tipZ, STICK.tipHeight, true);
   if (!tip) return;
 
   const pal = stickPalette(obs);
-  const alpha = passAlpha(slip, tip.d);
+  const alpha = passAlpha(slip, tip.d, !obs.resolved);
 
   ctx.save();
   ctx.globalAlpha = alpha;
   drawTipGlow(tip, pal, obs.foe ? 0.8 : 0.7);
   ctx.restore();
 
-  drawColumn(tipX, tipZ, pal, alpha, widthMul);
+  drawColumn(tipX, tipZ, pal, alpha);
+  if (obs.foe) drawContact(tipX, tipZ, obs, slip);
 
   // Ускоритель, который только что подтолкнул, разбрасывает искры.
   if (obs.ok && !obs.foe && slip > 0 && slip < 0.85) {
@@ -498,32 +531,30 @@ function drawStick(obs) {
  * нельзя, в центре остаётся только прыжок — ответ SPACE.
  */
 function drawCross(obs) {
-  const swing = smoothstep(strikeProgress(obs));
   const slip = slipProgress(obs);
   const tipZ = obs.z + STICK.tipZOffset;
-  const push = obs.ok ? slip * 1.5 : slip * 0.35;
-  // Камера едет с шайбой: ворота прыжка держим в центре кадра, а не у x = 0.
-  const gateX = S.puck.x || 0;
+  const gateX = (worldXAtScreen(tipZ, 0.5));
 
   drawIceGlow(gateX, obs.z, obs);
 
   const pal = stickPalette(obs);
   const sample = project(gateX, tipZ, true);
   if (!sample) return;
-  const alpha = passAlpha(slip, sample.d);
+  const alpha = passAlpha(slip, sample.d, !obs.resolved);
 
-  const gateL = gateX + stickTipX(-1, swing, push);
-  const gateR = gateX + stickTipX(1, swing, push);
+  const gateL = stickTipX(-1, tipZ, true, obs, slip);
+  const gateR = stickTipX(1, tipZ, true, obs, slip);
   const lBase = project(gateL, tipZ, true);
   const rBase = project(gateR, tipZ, true);
   const lTop = projectHeight(gateL, tipZ, PYLON.worldH * 0.32, true);
   const rTop = projectHeight(gateR, tipZ, PYLON.worldH * 0.32, true);
   if (lBase && rBase && lTop && rTop) {
-    bar(ctx, lBase, rBase, lTop, rTop, { rgb: pal.rgb, alpha: alpha * swing });
+    const arrive = obs.resolved ? 1 : clamp01(1 - timeToHit(obs) / 1.1);
+    bar(ctx, lBase, rBase, lTop, rTop, { rgb: pal.rgb, alpha: alpha * (0.4 + 0.6 * arrive) });
   }
 
   for (const gate of [gateL, gateR]) {
-    const tip = projectHeight(gate, tipZ, STICK.tipHeight);
+    const tip = projectHeight(gate, tipZ, STICK.tipHeight, true);
     if (!tip) continue;
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -531,6 +562,7 @@ function drawCross(obs) {
     ctx.restore();
     drawColumn(gate, tipZ, pal, alpha);
   }
+  if (obs.resolved && !obs.ok) drawContact(gateX, tipZ, obs, slip);
 }
 
 // ---------------------------------------------------------------------------
@@ -872,6 +904,55 @@ function drawTutorCue() {
   ctx.restore();
 }
 
+/** Ближайшая чужая, на которую ещё можно ответить. */
+function imminentFoe() {
+  let best = null;
+  let bestT = Infinity;
+  for (const obs of S.obstacles) {
+    if (!obs.foe || obs.resolved || !obs.want) continue;
+    const t = timeToHit(obs);
+    if (t < -0.45 || t > 1.35) continue;
+    if (t < bestT) {
+      bestT = t;
+      best = obs;
+    }
+  }
+  return best;
+}
+
+/**
+ * Знак кнопки в кадре. В обучении его рисует карточка, в игре — только это:
+ * пилон говорит, откуда угроза, знак — какую стрелку жать и когда.
+ */
+function drawAnswerCue() {
+  if (S.phase !== "play" || S.cinema) return;
+  if (S.tutorOn && S.tutorMode === "script") return;
+  const obs = imminentFoe();
+  if (!obs) return;
+
+  const tp = timingPhase(obs);
+  const hot = tp.phase === "perfect";
+  const late = tp.phase === "late";
+  const pulse = hot ? 0.82 + 0.18 * Math.sin(performance.now() / 80) : 1;
+  const alpha = (hot ? 1 : late ? 0.9 : 0.45 + 0.35 * (tp.intensity || 0)) * pulse;
+  const rgb = hot ? "255,255,255" : late ? "255,170,110" : "232,244,255";
+  const scale = Math.max(0.85, Math.min(1.35, W / 1100));
+  const size = (hot ? 108 : 72) * scale;
+  const cx = W / 2;
+  const cy = H * 0.64;
+
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = `rgba(${rgb},${alpha})`;
+  ctx.font = `800 ${size}px ${CUE_FONT}`;
+  ctx.fillText(cueKey(obs.want), cx, cy);
+  ctx.font = `700 ${Math.max(16, size * 0.22)}px ${CUE_FONT}`;
+  ctx.fillStyle = `rgba(${rgb},${Math.min(1, alpha * 0.9)})`;
+  ctx.fillText(hot ? "СЕЙЧАС" : cueWord(obs.want), cx, cy + size * 0.48);
+  ctx.restore();
+}
+
 /** Еле заметное деление на колонки, чтобы зоны тапа не были секретом. */
 function drawTapZones() {
   if (!isTouchUi() || S.phase !== "play") return;
@@ -961,6 +1042,7 @@ export function render() {
   if (!S.cinema) {
     drawTapZones();
     drawTutorCue();
+    drawAnswerCue();
     drawGripArrow();
   }
 }

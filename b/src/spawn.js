@@ -84,12 +84,24 @@ function spawnDist(spawn) {
  * Одна живая клюшка за раз: коридор, забитый припаркованными клюшками, читается
  * как каша. Заполняем лёд до пятака — остаток коридора получает ещё одну клюшку,
  * а не превращается в пустой проезд.
+ *
+ * На первых двух уровнях арка встаёт сразу за последней колонной.
+ * Иначе после неё остаётся пустой прогон: трасса посчитана на полную скорость,
+ * а колонны к этому моменту уже кончились.
  */
+function closeFinish() {
+  if (S.level > 1 || !S.lastSpawnZ) return;
+  const v = Math.max(S.puck ? S.puck.vz : 0, SPEED.min);
+  const crease = S.lastSpawnZ - TRACK.hitLine + v * TRACK.tailTime;
+  const dist = Math.round(crease + TRACK.creaseBack);
+  if (dist > S.puck.z + 40 && dist < S.runDist) S.runDist = dist;
+}
+
 export function maybeSpawnObstacles() {
   if (S.finalSpawned) return;
-  // На удлинённом L0 иначе добьём коридор лишними клюшками.
   if (S.stickCount >= sticksFor(S.level)) {
     S.finalSpawned = true;
+    closeFinish();
     return;
   }
   for (const o of S.obstacles) {
@@ -112,11 +124,13 @@ export function maybeSpawnObstacles() {
     const minGap = Math.max(S.puck.vz, SPEED.min) * Math.max(0.7, gapFor(S.level, mods()) * 0.65);
     if (S.lastSpawnZ >= lastSafeZ - minGap) {
       S.finalSpawned = true;
+      closeFinish();
       return;
     }
     nextZ = lastSafeZ;
     pushSpawn(nextZ, spawn, { final: true });
     S.finalSpawned = true;
+    closeFinish();
     return;
   }
 

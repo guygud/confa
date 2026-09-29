@@ -27,10 +27,10 @@ export function syncCamera() {
   rigCache.h = CAM.height + (CAM_OUT.height - CAM.height) * e + S.camBoost - DYN.dip * mix * (1 - e);
   rigCache.focal = CAM.focal * (1 - DYN.fovPull * mix * (1 - e));
   rigCache.far = Math.max(CAM.far, (S.runDist || 0) + 800);
-  const turnMix = S.cinema && S.cinema.mode === "miss" ? 1 : 1 - e;
-  rigCache.yaw = S.turn * TURN.yawMax * turnMix;
-  rigCache.drift = S.turn * TURN.driftMax * turnMix;
-  rigCache.shiftPx = -S.turn * TURN.iceShift * turnMix;
+  // Коридор не уводим в сторону: доворот сбивал трассу из кадра.
+  rigCache.yaw = 0;
+  rigCache.drift = 0;
+  rigCache.shiftPx = 0;
   return rigCache;
 }
 

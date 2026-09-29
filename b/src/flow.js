@@ -12,7 +12,7 @@
 //   жизни кончились      → полный сброс на первый уровень
 // ============================================================================
 
-import { AIM, MAX_LIVES, MOMENTUM, SPEED, trackLength } from "./balance.js";
+import { MAX_LIVES, MOMENTUM, SPEED, trackLength } from "./balance.js";
 import { CINEMA, FEEL, TURN } from "./tuning.js";
 import { ROUNDS, ROUND_NEUTRAL } from "./rounds.js";
 import { TUTOR } from "./tutorial-script.js";
@@ -442,9 +442,8 @@ export function updateCinema(dt) {
   return null;
 }
 
-/** Гол засчитывается на пятаке; сбитый прицел там же решает, промах это или нет. */
+/** Доехали до арки — это финиш. Съезд с трассы больше не превращает его в промах. */
 export function checkGoalLine() {
   if (S.tutorOn || S.puck.z < creaseZ()) return;
-  if (S.aim >= AIM.miss) startMissCam();
-  else startGoalCam();
+  startGoalCam();
 }

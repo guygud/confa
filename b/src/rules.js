@@ -31,7 +31,6 @@ import {
 import { FEEL, HEAT, STRAFE } from "./tuning.js";
 import { TUTOR } from "./tutorial-script.js";
 import { S, mods } from "./state.js";
-import { clampTurn, headingAway } from "./camera.js";
 import { sfx } from "./audio.js";
 import { showGrade, updateHud } from "./hud.js";
 import { spawnSparks, strafeKick } from "./fx.js";
@@ -237,8 +236,6 @@ function resolveSuccess(obs, grade) {
     const swing = late ? 1.7 : 1.35;
     S.braceLean = dir * (perfect ? 40 : late ? 48 : 26) * swing;
     S.tilt = dir * (perfect ? 0.055 : late ? 0.08 : 0.035) * swing;
-    // Каждая красная подряд добавляет ещё один шаг доворота от линии ворот.
-    S.turnTarget = clampTurn(S.turnTarget + headingAway(obs.side));
     S.aim = Math.min(1, S.aim + (perfect ? AIM.perfect : late ? AIM.late : AIM.good));
     if (late) {
       S.tremble = Math.max(S.tremble, 0.85);
@@ -306,7 +303,6 @@ function resolveFail(obs, reason) {
   S.wobble = 1;
   S.braceLean = obs.side * -12;
   if (obs.foe && obs.side !== 0) {
-    S.turnTarget = clampTurn(S.turnTarget + headingAway(obs.side));
     S.aim = Math.min(1, S.aim + AIM.fail);
   }
   spawnSparks(6);
